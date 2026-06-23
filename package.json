@@ -1,0 +1,14 @@
+{
+  "name": "food-truck-agent",
+  "version": "1.0.0",
+  "description": "Pepper's Kitchen — AI Food Truck Phone Order Demo",
+  "scripts": {
+    "postinstall": "npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "build": "npm run build --prefix client",
+    "start": "npm start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
