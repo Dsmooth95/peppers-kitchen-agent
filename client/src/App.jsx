@@ -20,6 +20,7 @@ export default function App() {
   const [cartItems, setCartItems] = useState([]);
   const [orderComplete, setOrderComplete] = useState(false);
   const [pickupTime, setPickupTime] = useState(null);
+  const [customerName, setCustomerName] = useState(null);
   const [squareOrderId, setSquareOrderId] = useState(null);
   const [orderNumber, setOrderNumber] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -41,6 +42,7 @@ export default function App() {
     setCartItems([]);
     setOrderComplete(false);
     setPickupTime(null);
+    setCustomerName(null);
     setSquareOrderId(null);
     setOrderNumber(null);
     setPanel('call');
@@ -99,6 +101,9 @@ export default function App() {
         if (data.suggestedPickupTime) {
           setPickupTime(data.suggestedPickupTime);
         }
+        if (data.customerName) {
+          setCustomerName(data.customerName);
+        }
       } catch {
         setMessages((prev) => [
           ...prev,
@@ -131,6 +136,7 @@ export default function App() {
     setCartItems([]);
     setOrderComplete(false);
     setPickupTime(null);
+    setCustomerName(null);
     setSessionId(null);
     setSquareOrderId(null);
     setOrderNumber(null);
@@ -160,6 +166,7 @@ export default function App() {
             cartItems={cartItems}
             total={total}
             pickupTime={pickupTime}
+            customerName={customerName}
             sessionId={sessionId}
             onPaymentConfirmed={handlePaymentConfirmed}
             onHangUp={handleReset}
@@ -172,6 +179,7 @@ export default function App() {
             pickupTime={pickupTime}
             cartItems={cartItems}
             total={total}
+            customerName={customerName}
             onDone={handleReset}
           />
         )}

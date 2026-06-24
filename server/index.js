@@ -18,10 +18,13 @@ app.use(express.json());
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 const sessions = new Map();
-// sessions[id] = { history, cartItems, orderComplete, pickupTime }
+// sessions[id] = { history, cartItems, orderComplete, pickupTime, customerName }
 
 const confirmedOrders = new Map();
-// confirmedOrders[squareOrderId] = { confirmed, orderNumber, timestamp }
+// confirmedOrders[squareOrderId] = { confirmed, orderNumber, customerName, timestamp }
+
+const pendingOrders = new Map();
+// pendingOrders[squareOrderId] = { customerName, cartItems, pickupTime, orderNumber, total }
 
 // ── API clients ───────────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -57,13 +60,15 @@ RULES:
 2. Confirm each item as it's added including any modifiers
 3. Suggest a drink if none has been ordered ("Can I add a drink to your order?")
 4. When the customer is done, read back the complete order with itemized prices and total
-5. Ask for their preferred pickup time (offer 15-minute increments, next available is always 20 minutes from now)
-6. Confirm pickup time and tell them a payment link will be sent to their phone
-7. Keep responses concise — this is a phone call simulation, not a chat
-8. If asked something you don't know, say "Let me have the owner get back to you on that"
-9. Never make up menu items or prices not listed above
+5. Ask for the customer's first name ("And what name can I put the order under?")
+6. Once you have their name, use it naturally in every response from that point on (e.g. "Got it [Name]!", "Perfect, [Name],")
+7. Ask for their preferred pickup time (offer 15-minute increments, next available is always 20 minutes from now)
+8. Confirm pickup time and tell them a payment link will be sent to their phone
+9. Keep responses concise — this is a phone call simulation, not a chat
+10. If asked something you don't know, say "Let me have the owner get back to you on that"
+11. Never make up menu items or prices not listed above
 
-When you add items to the order, update the order state, or confirm a complete order, call the update_order tool. Always call update_order with the COMPLETE current order (not just new items). Set orderComplete to true only after the customer has confirmed their entire order AND chosen a pickup time.`;
+When you add items to the order, update the order state, or confirm a complete order, call the update_order tool. Always call update_order with the COMPLETE current order (not just new items). When you learn the customer's first name, call update_order with customerName set. Set orderComplete to true only after the customer has confirmed their entire order, provided their name, AND chosen a pickup time.`;
 
 // ── Claude tool definition ────────────────────────────────────────────────────
 const UPDATE_ORDER_TOOL = {
@@ -107,11 +112,15 @@ const UPDATE_ORDER_TOOL = {
       orderComplete: {
         type: 'boolean',
         description:
-          'Set to true ONLY when customer has confirmed their full order AND chosen a pickup time',
+          'Set to true ONLY when customer has confirmed their full order, provided their name, AND chosen a pickup time',
       },
       suggestedPickupTime: {
         type: 'string',
         description: 'Pickup time confirmed with customer e.g. "12:30 PM"',
+      },
+      customerName: {
+        type: 'string',
+        description: "Customer's first name for the order, collected after confirming the total",
       },
     },
     required: ['items'],
@@ -133,6 +142,7 @@ app.post('/api/chat', async (req, res) => {
         cartItems: [],
         orderComplete: false,
         pickupTime: null,
+        customerName: null,
       });
     }
 
@@ -146,6 +156,7 @@ app.post('/api/chat', async (req, res) => {
     let cartItems = session.cartItems;
     let orderComplete = session.orderComplete;
     let suggestedPickupTime = session.pickupTime;
+    let customerName = session.customerName;
 
     let response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -179,6 +190,10 @@ app.post('/api/chat', async (req, res) => {
           if (input.suggestedPickupTime) {
             suggestedPickupTime = input.suggestedPickupTime;
             session.pickupTime = suggestedPickupTime;
+          }
+          if (input.customerName) {
+            customerName = input.customerName;
+            session.customerName = customerName;
           }
 
           toolResults.push({
@@ -218,6 +233,7 @@ app.post('/api/chat', async (req, res) => {
       cartItems,
       orderComplete,
       suggestedPickupTime,
+      customerName,
     });
   } catch (err) {
     console.error('Chat error:', err?.message || err);
@@ -238,6 +254,10 @@ app.post('/api/create-payment-link', async (req, res) => {
       return res.status(400).json({ error: 'No items in cart' });
     }
 
+    const session = sessions.get(sessionId);
+    const customerName = session?.customerName || 'Guest';
+    const pickupTime = session?.pickupTime;
+
     const lineItems = cartItems.map((item) => {
       const modTotal = (item.modifiers || []).reduce(
         (sum, m) => sum + (m.price || 0),
@@ -257,16 +277,33 @@ app.post('/api/create-payment-link', async (req, res) => {
       };
     });
 
+    const orderNote = pickupTime
+      ? `Order for ${customerName} — Pickup: ${pickupTime}`
+      : `Order for ${customerName}`;
+
     const response = await squareClient.checkout.paymentLinks.create({
       idempotencyKey: uuidv4(),
       order: {
         locationId: process.env.SQUARE_LOCATION_ID?.trim(),
         lineItems,
+        note: orderNote,
       },
     });
 
     const paymentLink = response.paymentLink;
     const orderNumber = `PK-${Date.now().toString().slice(-6)}`;
+    const total = cartItems.reduce((sum, item) => {
+      const modTotal = (item.modifiers || []).reduce((s, m) => s + (m.price || 0), 0);
+      return sum + (item.unitPrice + modTotal) * item.quantity;
+    }, 0);
+
+    pendingOrders.set(paymentLink.orderId, {
+      customerName,
+      cartItems,
+      pickupTime,
+      orderNumber,
+      total,
+    });
 
     return res.json({
       paymentUrl: paymentLink.url,
@@ -282,6 +319,22 @@ app.post('/api/create-payment-link', async (req, res) => {
   }
 });
 
+// ── Notification stubs ────────────────────────────────────────────────────────
+function fireNotifications({ orderNumber, customerName, cartItems, pickupTime, total }) {
+  if (process.env.NOTIFY_KDS === 'true') {
+    // TODO: POST to Square KDS or custom kitchen display webhook
+    console.log(`[KDS] Order ${orderNumber} for ${customerName} — ${cartItems.length} item(s), pickup ${pickupTime}`);
+  }
+  if (process.env.NOTIFY_PRINTER === 'true') {
+    // TODO: Send ESC/POS commands to receipt printer (e.g. via node-thermal-printer)
+    console.log(`[PRINTER] ${orderNumber} | Name: ${customerName} | Pickup: ${pickupTime} | Total: $${total.toFixed(2)}`);
+  }
+  if (process.env.NOTIFY_OWNER_SMS === 'true') {
+    // TODO: Send via Twilio or similar — use OWNER_PHONE env var
+    console.log(`[SMS → ${process.env.OWNER_PHONE}] New order ${orderNumber} for ${customerName} | Pickup: ${pickupTime} | $${total.toFixed(2)}`);
+  }
+}
+
 // ── POST /api/webhook (Square payment events) ─────────────────────────────────
 app.post('/api/webhook', (req, res) => {
   try {
@@ -291,23 +344,31 @@ app.post('/api/webhook', (req, res) => {
     if (event.type === 'payment.completed') {
       const orderId = event.data?.object?.payment?.order_id;
       if (orderId) {
+        const pending = pendingOrders.get(orderId);
+        const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
         confirmedOrders.set(orderId, {
           confirmed: true,
-          orderNumber: `PK-${Date.now().toString().slice(-6)}`,
+          orderNumber,
+          customerName: pending?.customerName,
           timestamp: new Date().toISOString(),
         });
-        console.log(`Order confirmed via webhook: ${orderId}`);
+        if (pending) fireNotifications({ orderNumber, ...pending });
+        console.log(`Order confirmed via webhook: ${orderId} (${pending?.customerName || 'Guest'})`);
       }
     }
 
     if (event.type === 'order.fulfillment.updated') {
       const orderId = event.data?.object?.order?.id;
       if (orderId) {
+        const pending = pendingOrders.get(orderId);
+        const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
         confirmedOrders.set(orderId, {
           confirmed: true,
-          orderNumber: `PK-${Date.now().toString().slice(-6)}`,
+          orderNumber,
+          customerName: pending?.customerName,
           timestamp: new Date().toISOString(),
         });
+        if (pending) fireNotifications({ orderNumber, ...pending });
       }
     }
 
@@ -324,7 +385,11 @@ app.get('/api/order-status/:orderId', (req, res) => {
   const orderData = confirmedOrders.get(orderId);
 
   if (orderData?.confirmed) {
-    return res.json({ confirmed: true, orderNumber: orderData.orderNumber });
+    return res.json({
+      confirmed: true,
+      orderNumber: orderData.orderNumber,
+      customerName: orderData.customerName,
+    });
   }
   return res.json({ confirmed: false });
 });
@@ -335,12 +400,16 @@ app.post('/api/simulate-payment', (req, res) => {
   if (!orderId) {
     return res.status(400).json({ error: 'orderId required' });
   }
+  const pending = pendingOrders.get(orderId);
+  const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
   confirmedOrders.set(orderId, {
     confirmed: true,
-    orderNumber: `PK-${Date.now().toString().slice(-6)}`,
+    orderNumber,
+    customerName: pending?.customerName,
     timestamp: new Date().toISOString(),
   });
-  console.log(`Simulated payment confirmation for order: ${orderId}`);
+  if (pending) fireNotifications({ orderNumber, ...pending });
+  console.log(`Simulated payment for order: ${orderId} (${pending?.customerName || 'Guest'})`);
   return res.json({ success: true });
 });
 

@@ -6,6 +6,7 @@ export default function PaymentScreen({
   cartItems,
   total,
   pickupTime,
+  customerName,
   sessionId,
   onPaymentConfirmed,
   onHangUp,
@@ -100,7 +101,9 @@ export default function PaymentScreen({
               <h2 className="text-white font-semibold text-base">
                 Confirm & Pay
               </h2>
-              <p className="text-gray-500 text-xs mt-0.5">Pepper's Kitchen</p>
+              <p className="text-gray-500 text-xs mt-0.5">
+                {customerName ? `Order for ${customerName}` : "Pepper's Kitchen"}
+              </p>
             </div>
 
             {/* Order preview */}

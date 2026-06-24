@@ -39,6 +39,7 @@ export default function ConfirmationScreen({
   pickupTime,
   cartItems,
   total,
+  customerName,
   onDone,
 }) {
   const [visibleSet, setVisibleSet] = useState(new Set());
@@ -67,7 +68,7 @@ export default function ConfirmationScreen({
               <CheckCircle size={30} className="text-white" />
             </div>
             <h1 className="text-white text-2xl font-bold tracking-tight">
-              Order Confirmed!
+              {customerName ? `Thanks, ${customerName}!` : 'Order Confirmed!'}
             </h1>
             <p className="text-green-400 text-sm mt-1.5">
               Thank you for ordering from Pepper's Kitchen 🌮
@@ -166,7 +167,7 @@ export default function ConfirmationScreen({
                         {key === 'sms' && visible && (
                           <div className="mt-3 bg-gray-800 rounded-2xl rounded-tl-none p-3 text-xs max-w-xs fade-in-up">
                             <p className="text-white font-semibold mb-1.5">
-                              🌮 New Order {displayNum}
+                              🌮 New Order {displayNum}{customerName ? ` — ${customerName}` : ''}
                             </p>
                             {cartItems.map((item, ci) => {
                               const modTotal = (item.modifiers || []).reduce(
