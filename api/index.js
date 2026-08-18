@@ -293,9 +293,16 @@ app.post('/api/chat', async (req, res) => {
     const keyDebug = process.env.ANTHROPIC_API_KEY
       ? `present, ${process.env.ANTHROPIC_API_KEY.length} chars, starts "${process.env.ANTHROPIC_API_KEY.slice(0, 12)}"`
       : 'MISSING';
+    const relatedKeys = Object.keys(process.env)
+      .filter((k) => /ANTHROP|API_KEY|SQUARE|REDIS/i.test(k))
+      .map((k) => `[${k}]`)
+      .join(', ');
+    const totalEnvVars = Object.keys(process.env).length;
     return res.status(500).json({
       error: 'Chat failed',
-      reply: `[DEBUG] ${err?.message || err} | ANTHROPIC_API_KEY: ${keyDebug}`,
+      debugRelatedKeys: relatedKeys || '(none found)',
+      debugTotalEnvVars: totalEnvVars,
+      reply: `[DEBUG] ANTHROPIC_API_KEY: ${keyDebug} | total env vars: ${totalEnvVars} | related keys: ${relatedKeys || '(none found)'}`,
     });
   }
 });
