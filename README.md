@@ -2,8 +2,6 @@
 
 A full-stack beta demo simulating a customer calling a food truck, placing an order via an AI agent, paying through Square, and triggering kitchen notifications — all inside a mobile phone UI in the browser.
 
-Built for government contract demonstration purposes.
-
 ---
 
 ## Tech Stack
