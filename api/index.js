@@ -74,6 +74,13 @@ const pendingKey = (orderId) => `pending:${orderId}`;
 const confirmedKey = (orderId) => `confirmed:${orderId}`;
 
 // ── API clients ───────────────────────────────────────────────────────────────
+// TEMP DEBUG — remove once ANTHROPIC_API_KEY resolution is confirmed working.
+console.log(
+  'ANTHROPIC_API_KEY debug:',
+  process.env.ANTHROPIC_API_KEY
+    ? `present, ${process.env.ANTHROPIC_API_KEY.length} chars, starts "${process.env.ANTHROPIC_API_KEY.slice(0, 12)}", ends "${process.env.ANTHROPIC_API_KEY.slice(-4)}"`
+    : 'MISSING (undefined or empty string)'
+);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const squareClient = new SquareClient({
