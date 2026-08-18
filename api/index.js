@@ -289,10 +289,13 @@ app.post('/api/chat', async (req, res) => {
     });
   } catch (err) {
     console.error('Chat error:', err?.message || err);
+    // TEMP DEBUG — remove once ANTHROPIC_API_KEY resolution is confirmed working.
+    const keyDebug = process.env.ANTHROPIC_API_KEY
+      ? `present, ${process.env.ANTHROPIC_API_KEY.length} chars, starts "${process.env.ANTHROPIC_API_KEY.slice(0, 12)}"`
+      : 'MISSING';
     return res.status(500).json({
       error: 'Chat failed',
-      reply:
-        "I'm sorry, I'm having a little trouble right now. Could you repeat that?",
+      reply: `[DEBUG] ${err?.message || err} | ANTHROPIC_API_KEY: ${keyDebug}`,
     });
   }
 });
