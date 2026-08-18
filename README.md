@@ -45,7 +45,7 @@ Add your other secrets in **Settings → Environment Variables** (or a local `.e
 | `SQUARE_LOCATION_ID` | Square Developer Dashboard → Sandbox → Locations |
 | `SQUARE_ENVIRONMENT` | Leave as `sandbox` for testing |
 
-To pull the KV credentials and any dashboard-configured vars down into a local `.env`:
+To pull the Redis connection string and any dashboard-configured vars down into a local `.env`:
 
 ```bash
 npx vercel env pull .env
