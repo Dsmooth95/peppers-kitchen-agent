@@ -16,7 +16,7 @@ Express app (api/index.js), running as one Vercel serverless function
       └── POST /api/simulate-payment   (demo helper)
                 │
                 ▼
-      Vercel KV (Upstash Redis) — sessions, pending orders, confirmed orders
+      Vercel Redis — sessions, pending orders, confirmed orders
 ```
 
 Serverless functions are stateless and may run on a different instance per
@@ -43,17 +43,17 @@ process memory — see [Session State](#session-state) below.
 
 Single Express file using ES modules, exported as one Vercel serverless
 function (all `/api/*` requests are rewritten to it — see `vercel.json`).
-Session, pending-order, and confirmed-order state lives in Vercel KV
-(Upstash Redis) rather than in-process memory, since serverless invocations
-don't share memory reliably. Locally, `vercel dev` runs this same function
-alongside the Vite dev server; `node api/index.js` also works standalone
-(binds to `PORT`, default 3001) for quick debugging without the Vercel CLI.
+Session, pending-order, and confirmed-order state lives in Vercel Redis
+rather than in-process memory, since serverless invocations don't share
+memory reliably. Locally, `vercel dev` runs this same function alongside the
+Vite dev server; `node api/index.js` also works standalone (binds to
+`PORT`, default 3001) for quick debugging without the Vercel CLI.
 
 | Route | Description |
 |-------|-------------|
 | `POST /api/chat` | Maintains per-session conversation history. Calls Claude with the `update_order` tool, runs a tool-use loop until Claude returns `end_turn`, then returns `{ reply, cartItems, orderComplete, suggestedPickupTime }`. |
 | `POST /api/create-payment-link` | Converts cart items to Square `lineItems` (amounts in BigInt cents), calls `checkoutApi.createPaymentLink`, returns `{ paymentUrl, orderId, orderNumber }`. |
-| `POST /api/webhook` | Receives Square `payment.completed` events, stores confirmed order IDs in `confirmedOrders` Map. |
+| `POST /api/webhook` | Receives Square `payment.completed` events, stores confirmed order data in Redis (`confirmed:${orderId}`). |
 | `GET /api/order-status/:orderId` | Returns `{ confirmed: true/false }`. Frontend polls this every 3 seconds after opening the payment page. |
 | `POST /api/simulate-payment` | Demo-only: manually marks an order as confirmed without needing a real webhook. |
 
@@ -88,7 +88,7 @@ The server merges each tool call result into the session's cart state and runs a
 }
 ```
 
-Sessions live in Vercel KV (Upstash Redis) with a 30-minute TTL, keyed by
+Sessions live in Vercel Redis with a 30-minute TTL, keyed by
 `session:${sessionId}`. Pending orders (`pending:${orderId}`) and confirmed
 orders (`confirmed:${orderId}`) use a 1-hour TTL. Because these are stored in
 Redis rather than process memory, they survive across the separate
@@ -190,17 +190,17 @@ The Claude conversation logic (`/api/chat`) does not need to change.
 ### 5. Persistence
 
 Already handled: sessions, pending orders, and confirmed orders are stored
-in Vercel KV (Upstash Redis) with TTLs (see [Session State](#session-state)).
+in Vercel Redis with TTLs (see [Session State](#session-state)).
 For durable order history beyond the 1-hour TTL (e.g. for reporting), add a
 `confirmed.order.completed` hook that also writes to a proper database —
-Vercel Postgres or an external provider both work fine alongside KV.
+Vercel Postgres or an external provider both work fine alongside Redis.
 
 ### 6. Deployment
 
 Deployed as a single Vercel project:
 - **Frontend:** static Vite build (`client/dist`), served by Vercel's edge network
 - **Backend:** `api/index.js` (Express) as one Vercel serverless function, reached via the `/api/*` rewrite in `vercel.json`
-- **State:** Vercel KV (Upstash Redis)
+- **State:** Vercel Redis
 
 Deploy with `npx vercel --prod` (see the README's Deploying to Vercel section).
 

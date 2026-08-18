@@ -12,7 +12,7 @@ A full-stack beta demo simulating a customer calling a food truck, placing an or
 | Backend | Node.js + Express, deployed as a Vercel serverless function |
 | AI Agent | Anthropic Claude (`claude-sonnet-4-6`) |
 | Payments | Square API (sandbox) |
-| State | Vercel KV (Upstash Redis) — sessions, pending/confirmed orders |
+| State | Vercel Redis — sessions, pending/confirmed orders |
 
 ---
 
@@ -33,7 +33,7 @@ This runs `postinstall` which also installs `client/` dependencies. The Vercel C
 npx vercel link
 ```
 
-Then in the Vercel dashboard for this project: **Storage → Create Database → Upstash for Redis**, and connect it. This auto-injects `KV_REST_API_URL` / `KV_REST_API_TOKEN`.
+Then in the Vercel dashboard for this project: **Storage → Create Database → Redis**, and connect it to this project. This auto-injects `REDIS_URL`.
 
 Add your other secrets in **Settings → Environment Variables** (or a local `.env`, copied from `.env.example`):
 
@@ -121,7 +121,7 @@ food-truck-agent/
 │
 ├── api/
 │   └── index.js                Express app exported as a Vercel serverless function;
-│                                all /api/* routes, state in Vercel KV (Upstash Redis)
+│                                all /api/* routes, state in Vercel Redis
 │
 └── client/
     ├── index.html
@@ -147,7 +147,7 @@ npx vercel --prod # production deploy
 ```
 
 Before your first deploy, make sure (via the dashboard or `vercel env add`):
-- The Upstash for Redis storage integration is connected (provides `KV_REST_API_URL` / `KV_REST_API_TOKEN`)
+- A Redis database is created and connected under Storage (provides `REDIS_URL`)
 - `ANTHROPIC_API_KEY`, `SQUARE_ACCESS_TOKEN`, `SQUARE_APPLICATION_ID`, `SQUARE_LOCATION_ID`, `SQUARE_ENVIRONMENT` are set as environment variables for the environments you deploy to (Preview/Production)
 - If using owner notifications: `NOTIFY_KDS`, `NOTIFY_PRINTER`, `NOTIFY_OWNER_SMS`, `OWNER_PHONE`
 

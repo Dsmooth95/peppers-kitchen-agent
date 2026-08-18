@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import squarePkg from 'square';
 const { SquareClient, SquareEnvironment } = squarePkg;
 import { v4 as uuidv4 } from 'uuid';
-import { Redis } from '@upstash/redis';
+import { createClient } from 'redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -17,17 +17,54 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Persistent store (Vercel KV / Upstash Redis) ───────────────────────────────
+// ── Persistent store (Vercel Redis) ─────────────────────────────────────────────
 // Sessions, pending orders, and confirmed orders must survive across separate
 // serverless invocations (e.g. the Square webhook lands on a different
 // instance than the one that created the payment link), so they live in
-// Redis instead of process memory. Set up "Upstash for Redis" from the
-// Vercel dashboard (Storage → Create Database) to get KV_REST_API_URL and
-// KV_REST_API_TOKEN — Vercel injects them automatically once connected.
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL,
-  token: process.env.KV_REST_API_TOKEN,
-});
+// Redis instead of process memory. Set up a Redis database from the Vercel
+// dashboard (Storage → Create Database → Redis) and connect it to this
+// project — Vercel injects REDIS_URL automatically once connected.
+//
+// The client connection is cached at module scope so warm serverless
+// instances reuse it across invocations instead of reconnecting every call.
+// connectTimeout + disabling auto-reconnect make a bad/missing REDIS_URL
+// fail fast (and reset the cache so the next request can retry) instead of
+// hanging silently against node-redis's default localhost:6379 target.
+let redisClientPromise;
+function getRedisClient() {
+  if (!process.env.REDIS_URL) {
+    return Promise.reject(
+      new Error('REDIS_URL is not set — connect a Redis database to this project in Vercel Storage.')
+    );
+  }
+  if (!redisClientPromise) {
+    const client = createClient({
+      url: process.env.REDIS_URL,
+      socket: { connectTimeout: 5000, reconnectStrategy: false },
+    });
+    client.on('error', (err) => console.error('Redis client error:', err));
+    redisClientPromise = client.connect().then(
+      () => client,
+      (err) => {
+        redisClientPromise = undefined;
+        throw err;
+      }
+    );
+  }
+  return redisClientPromise;
+}
+
+const redis = {
+  async get(key) {
+    const client = await getRedisClient();
+    const raw = await client.get(key);
+    return raw ? JSON.parse(raw) : null;
+  },
+  async set(key, value, { ex } = {}) {
+    const client = await getRedisClient();
+    await client.set(key, JSON.stringify(value), ex ? { EX: ex } : undefined);
+  },
+};
 
 const SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
 const ORDER_TTL_SECONDS = 60 * 60; // 1 hour
@@ -395,40 +432,50 @@ app.post('/api/webhook', async (req, res) => {
 
 // ── GET /api/order-status/:orderId ────────────────────────────────────────────
 app.get('/api/order-status/:orderId', async (req, res) => {
-  const { orderId } = req.params;
-  const orderData = await redis.get(confirmedKey(orderId));
+  try {
+    const { orderId } = req.params;
+    const orderData = await redis.get(confirmedKey(orderId));
 
-  if (orderData?.confirmed) {
-    return res.json({
-      confirmed: true,
-      orderNumber: orderData.orderNumber,
-      customerName: orderData.customerName,
-    });
+    if (orderData?.confirmed) {
+      return res.json({
+        confirmed: true,
+        orderNumber: orderData.orderNumber,
+        customerName: orderData.customerName,
+      });
+    }
+    return res.json({ confirmed: false });
+  } catch (err) {
+    console.error('Order status error:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to check order status' });
   }
-  return res.json({ confirmed: false });
 });
 
 // ── POST /api/simulate-payment (demo helper, no webhook needed) ───────────────
 app.post('/api/simulate-payment', async (req, res) => {
-  const { orderId } = req.body;
-  if (!orderId) {
-    return res.status(400).json({ error: 'orderId required' });
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId required' });
+    }
+    const pending = await redis.get(pendingKey(orderId));
+    const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
+    await redis.set(
+      confirmedKey(orderId),
+      {
+        confirmed: true,
+        orderNumber,
+        customerName: pending?.customerName,
+        timestamp: new Date().toISOString(),
+      },
+      { ex: ORDER_TTL_SECONDS }
+    );
+    if (pending) fireNotifications({ orderNumber, ...pending });
+    console.log(`Simulated payment for order: ${orderId} (${pending?.customerName || 'Guest'})`);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Simulate payment error:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to simulate payment' });
   }
-  const pending = await redis.get(pendingKey(orderId));
-  const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
-  await redis.set(
-    confirmedKey(orderId),
-    {
-      confirmed: true,
-      orderNumber,
-      customerName: pending?.customerName,
-      timestamp: new Date().toISOString(),
-    },
-    { ex: ORDER_TTL_SECONDS }
-  );
-  if (pending) fireNotifications({ orderNumber, ...pending });
-  console.log(`Simulated payment for order: ${orderId} (${pending?.customerName || 'Guest'})`);
-  return res.json({ success: true });
 });
 
 // ── Local dev only — Vercel invokes the exported app directly ──────────────────
