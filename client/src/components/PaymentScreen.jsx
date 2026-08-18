@@ -60,7 +60,7 @@ export default function PaymentScreen({
         body: JSON.stringify({ cartItems, sessionId }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create payment link');
+      if (!res.ok) throw new Error(data.details || data.error || 'Failed to create payment link');
 
       setPaymentUrl(data.paymentUrl);
       setSquareOrderId(data.orderId);
