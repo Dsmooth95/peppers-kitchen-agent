@@ -74,13 +74,6 @@ const pendingKey = (orderId) => `pending:${orderId}`;
 const confirmedKey = (orderId) => `confirmed:${orderId}`;
 
 // ── API clients ───────────────────────────────────────────────────────────────
-// TEMP DEBUG — remove once ANTHROPIC_API_KEY resolution is confirmed working.
-console.log(
-  'ANTHROPIC_API_KEY debug:',
-  process.env.ANTHROPIC_API_KEY
-    ? `present, ${process.env.ANTHROPIC_API_KEY.length} chars, starts "${process.env.ANTHROPIC_API_KEY.slice(0, 12)}", ends "${process.env.ANTHROPIC_API_KEY.slice(-4)}"`
-    : 'MISSING (undefined or empty string)'
-);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const squareClient = new SquareClient({
@@ -289,20 +282,10 @@ app.post('/api/chat', async (req, res) => {
     });
   } catch (err) {
     console.error('Chat error:', err?.message || err);
-    // TEMP DEBUG — remove once ANTHROPIC_API_KEY resolution is confirmed working.
-    const keyDebug = process.env.ANTHROPIC_API_KEY
-      ? `present, ${process.env.ANTHROPIC_API_KEY.length} chars, starts "${process.env.ANTHROPIC_API_KEY.slice(0, 12)}"`
-      : 'MISSING';
-    const relatedKeys = Object.keys(process.env)
-      .filter((k) => /ANTHROP|API_KEY|SQUARE|REDIS/i.test(k))
-      .map((k) => `[${k}]`)
-      .join(', ');
-    const totalEnvVars = Object.keys(process.env).length;
     return res.status(500).json({
       error: 'Chat failed',
-      debugRelatedKeys: relatedKeys || '(none found)',
-      debugTotalEnvVars: totalEnvVars,
-      reply: `[DEBUG] ANTHROPIC_API_KEY: ${keyDebug} | total env vars: ${totalEnvVars} | related keys: ${relatedKeys || '(none found)'}`,
+      reply:
+        "I'm sorry, I'm having a little trouble right now. Could you repeat that?",
     });
   }
 });
