@@ -11,9 +11,10 @@ Built for government contract demonstration purposes.
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 18 + Vite + Tailwind CSS |
-| Backend | Node.js + Express (ESM) |
+| Backend | Node.js + Express, deployed as a Vercel serverless function |
 | AI Agent | Anthropic Claude (`claude-sonnet-4-6`) |
 | Payments | Square API (sandbox) |
+| State | Vercel KV (Upstash Redis) — sessions, pending/confirmed orders |
 
 ---
 
@@ -26,15 +27,17 @@ cd food-truck-agent
 npm install
 ```
 
-This runs `postinstall` which automatically installs both `server/` and `client/` dependencies.
+This runs `postinstall` which also installs `client/` dependencies. The Vercel CLI is included as a dev dependency so `vercel dev` works without a global install.
 
-### 2. Configure environment variables
+### 2. Link the project and pull environment variables
 
 ```bash
-cp .env.example .env
+npx vercel link
 ```
 
-Open `.env` and fill in your API keys:
+Then in the Vercel dashboard for this project: **Storage → Create Database → Upstash for Redis**, and connect it. This auto-injects `KV_REST_API_URL` / `KV_REST_API_TOKEN`.
+
+Add your other secrets in **Settings → Environment Variables** (or a local `.env`, copied from `.env.example`):
 
 | Variable | Where to get it |
 |----------|----------------|
@@ -44,15 +47,19 @@ Open `.env` and fill in your API keys:
 | `SQUARE_LOCATION_ID` | Square Developer Dashboard → Sandbox → Locations |
 | `SQUARE_ENVIRONMENT` | Leave as `sandbox` for testing |
 
+To pull the KV credentials and any dashboard-configured vars down into a local `.env`:
+
+```bash
+npx vercel env pull .env
+```
+
 ### 3. Run
 
 ```bash
 npm run dev
 ```
 
-Starts both servers concurrently:
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:3001
+This runs `vercel dev`, which serves the Vite frontend and the `/api/*` serverless function together on one port (default http://localhost:3000), matching how it behaves in production.
 
 ---
 
@@ -70,7 +77,7 @@ Starts both servers concurrently:
 
 ## Demo Flow
 
-1. Open http://localhost:5173
+1. Open http://localhost:3000 (the port `vercel dev` prints)
 2. Click the green **Call** button on the phone screen
 3. Type your order in the chat (e.g., `"2 beef tacos with guacamole and a Mexican Coke"`)
 4. Follow Pepper's prompts to confirm items and choose a pickup time
@@ -95,14 +102,12 @@ If you're running locally without a public webhook URL, after clicking **Pay Now
 
 ## Setting Up Webhooks (Optional)
 
-For real-time payment confirmation without the simulate button:
+For real-time payment confirmation without the simulate button, once deployed to Vercel (or tunneled locally via `vercel dev` + ngrok):
 
-1. Install [ngrok](https://ngrok.com): `ngrok http 3001`
-2. Copy your ngrok HTTPS URL (e.g., `https://abc123.ngrok.io`)
-3. In Square Developer Dashboard → **Webhooks** → **Add endpoint:**
-   - URL: `https://abc123.ngrok.io/api/webhook`
+1. In Square Developer Dashboard → **Webhooks** → **Add endpoint:**
+   - URL: `https://<your-vercel-domain>/api/webhook`
    - Events: `payment.completed`
-4. Save. Now completing the Square checkout will automatically trigger the confirmation screen.
+2. Save. Now completing the Square checkout will automatically trigger the confirmation screen.
 
 ---
 
@@ -110,18 +115,19 @@ For real-time payment confirmation without the simulate button:
 
 ```
 food-truck-agent/
-├── .env                        API keys (never commit this)
+├── .env                        Local secrets (never commit this)
 ├── .env.example                Key names with empty values
-├── package.json                Root: runs both servers via concurrently
+├── package.json                Root: deps for api/, dev via `vercel dev`
+├── vercel.json                 Build/dev/rewrite config for Vercel
 ├── food-truck-agent.code-workspace
 │
-├── server/
-│   ├── package.json
-│   └── index.js                Express API server
+├── api/
+│   └── index.js                Express app exported as a Vercel serverless function;
+│                                all /api/* routes, state in Vercel KV (Upstash Redis)
 │
 └── client/
     ├── index.html
-    ├── vite.config.js          Proxies /api → localhost:3001
+    ├── vite.config.js
     ├── tailwind.config.js
     └── src/
         ├── App.jsx             Panel state machine
@@ -135,6 +141,16 @@ food-truck-agent/
 
 ---
 
-## Going to Production
+## Deploying to Vercel
 
-See `SYSTEM_ARCHITECTURE.md` for a complete swap guide from sandbox to production.
+```bash
+npx vercel        # preview deploy
+npx vercel --prod # production deploy
+```
+
+Before your first deploy, make sure (via the dashboard or `vercel env add`):
+- The Upstash for Redis storage integration is connected (provides `KV_REST_API_URL` / `KV_REST_API_TOKEN`)
+- `ANTHROPIC_API_KEY`, `SQUARE_ACCESS_TOKEN`, `SQUARE_APPLICATION_ID`, `SQUARE_LOCATION_ID`, `SQUARE_ENVIRONMENT` are set as environment variables for the environments you deploy to (Preview/Production)
+- If using owner notifications: `NOTIFY_KDS`, `NOTIFY_PRINTER`, `NOTIFY_OWNER_SMS`, `OWNER_PHONE`
+
+See `SYSTEM_ARCHITECTURE.md` for the full production swap guide (real payments, real SMS, etc).

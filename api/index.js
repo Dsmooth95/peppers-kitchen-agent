@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import squarePkg from 'square';
 const { SquareClient, SquareEnvironment } = squarePkg;
 import { v4 as uuidv4 } from 'uuid';
+import { Redis } from '@upstash/redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,15 +17,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── In-memory stores ──────────────────────────────────────────────────────────
-const sessions = new Map();
-// sessions[id] = { history, cartItems, orderComplete, pickupTime, customerName }
+// ── Persistent store (Vercel KV / Upstash Redis) ───────────────────────────────
+// Sessions, pending orders, and confirmed orders must survive across separate
+// serverless invocations (e.g. the Square webhook lands on a different
+// instance than the one that created the payment link), so they live in
+// Redis instead of process memory. Set up "Upstash for Redis" from the
+// Vercel dashboard (Storage → Create Database) to get KV_REST_API_URL and
+// KV_REST_API_TOKEN — Vercel injects them automatically once connected.
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN,
+});
 
-const confirmedOrders = new Map();
-// confirmedOrders[squareOrderId] = { confirmed, orderNumber, customerName, timestamp }
+const SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
+const ORDER_TTL_SECONDS = 60 * 60; // 1 hour
 
-const pendingOrders = new Map();
-// pendingOrders[squareOrderId] = { customerName, cartItems, pickupTime, orderNumber, total }
+const sessionKey = (id) => `session:${id}`;
+const pendingKey = (orderId) => `pending:${orderId}`;
+const confirmedKey = (orderId) => `confirmed:${orderId}`;
 
 // ── API clients ───────────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -136,17 +146,13 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'sessionId is required' });
     }
 
-    if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, {
-        history: [],
-        cartItems: [],
-        orderComplete: false,
-        pickupTime: null,
-        customerName: null,
-      });
-    }
-
-    const session = sessions.get(sessionId);
+    const session = (await redis.get(sessionKey(sessionId))) || {
+      history: [],
+      cartItems: [],
+      orderComplete: false,
+      pickupTime: null,
+      customerName: null,
+    };
 
     // Add user message to history
     const userContent = message?.trim() || 'Hello';
@@ -228,6 +234,8 @@ app.post('/api/chat', async (req, res) => {
     // Add final assistant message to history
     session.history.push({ role: 'assistant', content: response.content });
 
+    await redis.set(sessionKey(sessionId), session, { ex: SESSION_TTL_SECONDS });
+
     return res.json({
       reply: assistantReply,
       cartItems,
@@ -254,7 +262,7 @@ app.post('/api/create-payment-link', async (req, res) => {
       return res.status(400).json({ error: 'No items in cart' });
     }
 
-    const session = sessions.get(sessionId);
+    const session = await redis.get(sessionKey(sessionId));
     const customerName = session?.customerName || 'Guest';
     const pickupTime = session?.pickupTime;
 
@@ -297,13 +305,11 @@ app.post('/api/create-payment-link', async (req, res) => {
       return sum + (item.unitPrice + modTotal) * item.quantity;
     }, 0);
 
-    pendingOrders.set(paymentLink.orderId, {
-      customerName,
-      cartItems,
-      pickupTime,
-      orderNumber,
-      total,
-    });
+    await redis.set(
+      pendingKey(paymentLink.orderId),
+      { customerName, cartItems, pickupTime, orderNumber, total },
+      { ex: ORDER_TTL_SECONDS }
+    );
 
     return res.json({
       paymentUrl: paymentLink.url,
@@ -336,7 +342,7 @@ function fireNotifications({ orderNumber, customerName, cartItems, pickupTime, t
 }
 
 // ── POST /api/webhook (Square payment events) ─────────────────────────────────
-app.post('/api/webhook', (req, res) => {
+app.post('/api/webhook', async (req, res) => {
   try {
     const event = req.body;
     console.log('Webhook received:', event?.type);
@@ -344,14 +350,18 @@ app.post('/api/webhook', (req, res) => {
     if (event.type === 'payment.completed') {
       const orderId = event.data?.object?.payment?.order_id;
       if (orderId) {
-        const pending = pendingOrders.get(orderId);
+        const pending = await redis.get(pendingKey(orderId));
         const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
-        confirmedOrders.set(orderId, {
-          confirmed: true,
-          orderNumber,
-          customerName: pending?.customerName,
-          timestamp: new Date().toISOString(),
-        });
+        await redis.set(
+          confirmedKey(orderId),
+          {
+            confirmed: true,
+            orderNumber,
+            customerName: pending?.customerName,
+            timestamp: new Date().toISOString(),
+          },
+          { ex: ORDER_TTL_SECONDS }
+        );
         if (pending) fireNotifications({ orderNumber, ...pending });
         console.log(`Order confirmed via webhook: ${orderId} (${pending?.customerName || 'Guest'})`);
       }
@@ -360,14 +370,18 @@ app.post('/api/webhook', (req, res) => {
     if (event.type === 'order.fulfillment.updated') {
       const orderId = event.data?.object?.order?.id;
       if (orderId) {
-        const pending = pendingOrders.get(orderId);
+        const pending = await redis.get(pendingKey(orderId));
         const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
-        confirmedOrders.set(orderId, {
-          confirmed: true,
-          orderNumber,
-          customerName: pending?.customerName,
-          timestamp: new Date().toISOString(),
-        });
+        await redis.set(
+          confirmedKey(orderId),
+          {
+            confirmed: true,
+            orderNumber,
+            customerName: pending?.customerName,
+            timestamp: new Date().toISOString(),
+          },
+          { ex: ORDER_TTL_SECONDS }
+        );
         if (pending) fireNotifications({ orderNumber, ...pending });
       }
     }
@@ -380,9 +394,9 @@ app.post('/api/webhook', (req, res) => {
 });
 
 // ── GET /api/order-status/:orderId ────────────────────────────────────────────
-app.get('/api/order-status/:orderId', (req, res) => {
+app.get('/api/order-status/:orderId', async (req, res) => {
   const { orderId } = req.params;
-  const orderData = confirmedOrders.get(orderId);
+  const orderData = await redis.get(confirmedKey(orderId));
 
   if (orderData?.confirmed) {
     return res.json({
@@ -395,27 +409,35 @@ app.get('/api/order-status/:orderId', (req, res) => {
 });
 
 // ── POST /api/simulate-payment (demo helper, no webhook needed) ───────────────
-app.post('/api/simulate-payment', (req, res) => {
+app.post('/api/simulate-payment', async (req, res) => {
   const { orderId } = req.body;
   if (!orderId) {
     return res.status(400).json({ error: 'orderId required' });
   }
-  const pending = pendingOrders.get(orderId);
+  const pending = await redis.get(pendingKey(orderId));
   const orderNumber = pending?.orderNumber || `PK-${Date.now().toString().slice(-6)}`;
-  confirmedOrders.set(orderId, {
-    confirmed: true,
-    orderNumber,
-    customerName: pending?.customerName,
-    timestamp: new Date().toISOString(),
-  });
+  await redis.set(
+    confirmedKey(orderId),
+    {
+      confirmed: true,
+      orderNumber,
+      customerName: pending?.customerName,
+      timestamp: new Date().toISOString(),
+    },
+    { ex: ORDER_TTL_SECONDS }
+  );
   if (pending) fireNotifications({ orderNumber, ...pending });
   console.log(`Simulated payment for order: ${orderId} (${pending?.customerName || 'Guest'})`);
   return res.json({ success: true });
 });
 
-// ── Start server ──────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`🌮  Pepper's Kitchen server running on http://localhost:${PORT}`);
-  console.log(`   Square env: ${process.env.SQUARE_ENVIRONMENT || 'sandbox'}`);
-});
+// ── Local dev only — Vercel invokes the exported app directly ──────────────────
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`🌮  Pepper's Kitchen server running on http://localhost:${PORT}`);
+    console.log(`   Square env: ${process.env.SQUARE_ENVIRONMENT || 'sandbox'}`);
+  });
+}
+
+export default app;

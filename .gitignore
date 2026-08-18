@@ -1,7 +1,9 @@
 # Dependencies
 node_modules/
-server/node_modules/
 client/node_modules/
+
+# Vercel
+.vercel
 
 # Environment variables
 .env

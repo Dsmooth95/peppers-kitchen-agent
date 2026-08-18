@@ -3,19 +3,26 @@
 ## Overview
 
 ```
-Browser (React)
+Browser (React, static build served by Vercel)
       │  fetch('/api/...')
       ▼
-Vite Dev Server (proxy)   ─── in production: Nginx / reverse proxy
-      │
+Vercel rewrite: /api/:path* → /api/index
       ▼
-Express API Server (Node.js)
+Express app (api/index.js), running as one Vercel serverless function
       ├── POST /api/chat            → Anthropic Claude API
       ├── POST /api/create-payment-link → Square Checkout API
       ├── POST /api/webhook         ← Square webhook (payment events)
       ├── GET  /api/order-status/:id   (polling)
       └── POST /api/simulate-payment   (demo helper)
+                │
+                ▼
+      Vercel KV (Upstash Redis) — sessions, pending orders, confirmed orders
 ```
+
+Serverless functions are stateless and may run on a different instance per
+request, so all state that needs to survive between requests (a customer's
+conversation, a payment link waiting on a webhook) lives in Redis rather than
+process memory — see [Session State](#session-state) below.
 
 ---
 
@@ -32,9 +39,15 @@ Express API Server (Node.js)
 | `PaymentScreen.jsx` | Payment UI — order recap, Square link creation, SMS mock, polling loop |
 | `ConfirmationScreen.jsx` | Success screen — order details, 3 sequenced kitchen notification cards |
 
-### Backend (`server/index.js`)
+### Backend (`api/index.js`)
 
-Single Express file using ES modules. All state is in-memory (suitable for single-node demo).
+Single Express file using ES modules, exported as one Vercel serverless
+function (all `/api/*` requests are rewritten to it — see `vercel.json`).
+Session, pending-order, and confirmed-order state lives in Vercel KV
+(Upstash Redis) rather than in-process memory, since serverless invocations
+don't share memory reliably. Locally, `vercel dev` runs this same function
+alongside the Vite dev server; `node api/index.js` also works standalone
+(binds to `PORT`, default 3001) for quick debugging without the Vercel CLI.
 
 | Route | Description |
 |-------|-------------|
@@ -65,15 +78,23 @@ The server merges each tool call result into the session's cart state and runs a
 ### Session State
 
 ```js
-sessions[sessionId] = {
+// Redis key: session:${sessionId}, TTL 30 minutes
+{
   history: [],        // Anthropic messages array (user/assistant alternating)
   cartItems: [],      // Current cumulative cart
   orderComplete: false,
   pickupTime: null,
+  customerName: null,
 }
 ```
 
-Sessions live in a `Map` in server memory. They are not persisted — restarting the server clears all sessions.
+Sessions live in Vercel KV (Upstash Redis) with a 30-minute TTL, keyed by
+`session:${sessionId}`. Pending orders (`pending:${orderId}`) and confirmed
+orders (`confirmed:${orderId}`) use a 1-hour TTL. Because these are stored in
+Redis rather than process memory, they survive across the separate
+serverless invocations involved in a real order: the request that creates
+the payment link, the async Square webhook that confirms payment, and the
+frontend's polling requests may each land on a different function instance.
 
 ---
 
@@ -126,7 +147,7 @@ SQUARE_LOCATION_ID=<production location id>
 SQUARE_ENVIRONMENT=production
 ```
 
-Register a production webhook endpoint pointing to your server's `/api/webhook`.
+Register a production webhook endpoint pointing to `https://<your-vercel-domain>/api/webhook`.
 
 ### 2. Anthropic
 
@@ -140,7 +161,7 @@ In production, replace the mock SMS bubble with real Twilio SMS:
 npm install twilio --prefix server
 ```
 
-In `server/index.js`, after confirming order in `/api/webhook`:
+In `api/index.js`, after confirming order in `/api/webhook`:
 
 ```js
 import twilio from 'twilio';
@@ -168,26 +189,26 @@ The Claude conversation logic (`/api/chat`) does not need to change.
 
 ### 5. Persistence
 
-Replace the in-memory Maps with a database:
-
-| Current | Production replacement |
-|---------|----------------------|
-| `sessions` Map | Redis (with 30-minute TTL per session) |
-| `confirmedOrders` Map | PostgreSQL `orders` table |
+Already handled: sessions, pending orders, and confirmed orders are stored
+in Vercel KV (Upstash Redis) with TTLs (see [Session State](#session-state)).
+For durable order history beyond the 1-hour TTL (e.g. for reporting), add a
+`confirmed.order.completed` hook that also writes to a proper database —
+Vercel Postgres or an external provider both work fine alongside KV.
 
 ### 6. Deployment
 
-Recommended stack:
-- **Backend:** Railway, Render, or AWS ECS
-- **Frontend:** Vercel, Netlify, or served as static files from the same server
-- **Reverse proxy:** Nginx (if self-hosting) — proxy `/api/*` to Express, serve static client build for everything else
+Deployed as a single Vercel project:
+- **Frontend:** static Vite build (`client/dist`), served by Vercel's edge network
+- **Backend:** `api/index.js` (Express) as one Vercel serverless function, reached via the `/api/*` rewrite in `vercel.json`
+- **State:** Vercel KV (Upstash Redis)
+
+Deploy with `npx vercel --prod` (see the README's Deploying to Vercel section).
 
 ---
 
 ## Security Notes for Production
 
 - Add Square webhook signature verification (use `SQUARE_WEBHOOK_SIGNATURE_KEY` from the dashboard)
-- Move session state to Redis with TTLs
 - Add rate limiting (`express-rate-limit`) on `/api/chat`
 - Never log full conversation history containing customer PII
-- Store `.env` values in your platform's secrets manager (AWS Secrets Manager, Railway variables, etc.)
+- Store secrets as Vercel environment variables (Settings → Environment Variables), scoped per environment (Development/Preview/Production) rather than in a committed `.env`
