@@ -75,7 +75,7 @@ This runs `vercel dev`, which serves the Vite frontend and the `/api/*` serverle
 
 ## Demo Flow
 
-1. Open http://localhost:3000 (the port `vercel dev` prints)
+1. Open https://peppers-kitchen-agent.vercel.app/
 2. Click the green **Call** button on the phone screen
 3. Type your order in the chat (e.g., `"2 beef tacos with guacamole and a Mexican Coke"`)
 4. Follow Pepper's prompts to confirm items and choose a pickup time
