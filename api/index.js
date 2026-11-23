@@ -8,6 +8,7 @@ import squarePkg from 'square';
 const { SquareClient, SquareEnvironment } = squarePkg;
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from 'redis';
+import { toSquareLineItem, orderTotal } from './pricing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -303,24 +304,7 @@ app.post('/api/create-payment-link', async (req, res) => {
     const customerName = session?.customerName || 'Guest';
     const pickupTime = session?.pickupTime;
 
-    const lineItems = cartItems.map((item) => {
-      const modTotal = (item.modifiers || []).reduce(
-        (sum, m) => sum + (m.price || 0),
-        0
-      );
-      const totalUnitPrice = (item.unitPrice || 0) + modTotal;
-      const modNames = (item.modifiers || []).map((m) => m.name).join(', ');
-      const displayName = modNames ? `${item.name} (${modNames})` : item.name;
-
-      return {
-        name: displayName,
-        quantity: String(item.quantity),
-        basePriceMoney: {
-          amount: BigInt(Math.round(totalUnitPrice * 100)),
-          currency: 'USD',
-        },
-      };
-    });
+    const lineItems = cartItems.map(toSquareLineItem);
 
     const orderNote = pickupTime
       ? `Order for ${customerName} — Pickup: ${pickupTime}`
@@ -337,10 +321,7 @@ app.post('/api/create-payment-link', async (req, res) => {
 
     const paymentLink = response.paymentLink;
     const orderNumber = `PK-${Date.now().toString().slice(-6)}`;
-    const total = cartItems.reduce((sum, item) => {
-      const modTotal = (item.modifiers || []).reduce((s, m) => s + (m.price || 0), 0);
-      return sum + (item.unitPrice + modTotal) * item.quantity;
-    }, 0);
+    const total = orderTotal(cartItems);
 
     await redis.set(
       pendingKey(paymentLink.orderId),
