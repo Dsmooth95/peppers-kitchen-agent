@@ -61,6 +61,26 @@ This runs `vercel dev`, which serves the Vite frontend and the `/api/*` serverle
 
 ---
 
+## Running Tests
+
+```bash
+npm test
+```
+
+Unit tests cover the order pricing logic in `api/pricing.js`, which `/api/create-payment-link` uses to build Square line items and the order total. They use Node's built-in test runner (`node:test`), so there's nothing extra to install, and they make no network calls (no Redis, Square, or Anthropic), so no `.env` is needed.
+
+What the tests check:
+
+- **Modifier totals:** add-on prices are summed; modifiers with no price count as $0; missing or empty modifier lists give $0.
+- **Unit price:** base price plus modifiers; a missing base price counts as $0.
+- **Square line items:**
+  - Prices are converted from dollars to whole cents as a `BigInt` (e.g. $3.99 → `399n`), with floating-point sums rounded correctly (e.g. $0.10 + $0.20 → `30n`).
+  - Item names include modifiers when present (e.g. `Burrito (Guac, Extra salsa)`).
+  - Quantity is sent as a string.
+- **Order total:** quantities and modifiers are included; an item with no base price gives a numeric total (not `NaN`); an empty cart totals $0.
+
+---
+
 ## Getting Square Sandbox Keys
 
 1. Go to [developer.squareup.com](https://developer.squareup.com) and sign in
@@ -120,8 +140,12 @@ food-truck-agent/
 ├── food-truck-agent.code-workspace
 │
 ├── api/
-│   └── index.js                Express app exported as a Vercel serverless function;
-│                                all /api/* routes, state in Vercel Redis
+│   ├── index.js                Express app exported as a Vercel serverless function;
+│   │                            all /api/* routes, state in Vercel Redis
+│   └── pricing.js              Pure pricing helpers (line items, order total)
+│
+├── test/
+│   └── pricing.test.js         Unit tests for api/pricing.js (`npm test`)
 │
 └── client/
     ├── index.html
