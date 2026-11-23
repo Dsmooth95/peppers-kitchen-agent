@@ -8,7 +8,8 @@
     "postinstall": "npm install --prefix client",
     "dev": "vercel dev",
     "build": "npm install --prefix client && npm run build --prefix client",
-    "start": "node api/index.js"
+    "start": "node api/index.js",
+    "test": "node --test test/pricing.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
